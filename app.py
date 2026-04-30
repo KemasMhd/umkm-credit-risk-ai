@@ -191,43 +191,6 @@ def load_model():
         return model, "✅ Model Loaded (AutoML - Production Ready)"
     except Exception as e:
         return None, f"❌ Gagal load model: {e}"
-    
-    # 2. Coba Azure Blob (tanpa azureml, pakai azure-storage-blob saja)
-    conn_str  = os.environ.get("AZURE_STORAGE_CONNECTION_STRING", "")
-    container = os.environ.get("AZURE_CONTAINER_NAME", "dataset")
-    if conn_str:
-        try:
-            from azure.storage.blob import BlobServiceClient
-            import tempfile
-            client = BlobServiceClient.from_connection_string(conn_str)
-            blob   = client.get_blob_client(container=container, blob="models/best_model.pkl")
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pkl") as tmp:
-                tmp.write(blob.download_blob().readall())
-                tmp_path = tmp.name
-            model = joblib.load(tmp_path)
-            return model, "✅ Model AutoML loaded dari Azure Blob"
-        except Exception as e:
-            pass
-
-    # 3. Fallback rule-based
-    class RuleModel:
-        def predict_proba(self, X):
-            results = []
-            for _, row in X.iterrows():
-                score = (
-                    float(row.get('loan_to_income_ratio', 0.3)) * 0.35 +
-                    float(row.get('debt_service_ratio', 0.3))   * 0.30 +
-                    (float(row.get('loan_int_rate', 12)) / 25)  * 0.20 +
-                    (1 - min(float(row.get('person_income', 50e6)) / 120e6, 1)) * 0.15
-                )
-                score = float(np.clip(score, 0.02, 0.98))
-                results.append([1 - score, score])
-            return np.array(results)
-        def predict(self, X):
-            return (self.predict_proba(X)[:, 1] >= 0.5).astype(int)
-
-    return RuleModel(), "⚠️ Demo mode — upload best_model.pkl ke repo untuk model asli"
-
 # ─── SHAP Approximation ───────────────────────────────────────────────────────
 def estimate_shap(model, input_df):
     try:
