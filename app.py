@@ -179,7 +179,7 @@ def load_model():
     import joblib
 
     # 1. Coba load dari local file (di repo GitHub)
-    local_paths = ["./best_model.pkl", "best_model.pkl"]
+    local_paths = ["/workspaces/umkm-credit-risk-ai/model/best_model.pkl", "best_model.pkl"]
     for path in local_paths:
         if os.path.exists(path):
             try:
