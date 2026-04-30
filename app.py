@@ -170,20 +170,10 @@ def plot_shap(shap_vals, features, title):
 # ─── Load Model ───────────────────────────────────────────────────────────────
 @st.cache_resource
 def load_model():
-    """
-    Load model dengan urutan prioritas:
-    1. Local file best_model.pkl (di repo GitHub)
-    2. Azure Blob Storage (opsional)
-    3. Rule-based fallback
-    """
-    import joblib
+    import os
+    import joblib   # 🔥 WAJIB ADA DI SINI
+    import gdown
 
-    # 1. Coba load dari local file (di repo GitHub)
-    import joblib
-import gdown
-import os
-
-def load_model():
     MODEL_PATH = "best_model.pkl"
     FILE_ID = "1yBlsh6nY6NRG2ACqsBECd2XP50o8MIO2"
 
@@ -201,14 +191,7 @@ def load_model():
         return model, "✅ Model Loaded (AutoML - Production Ready)"
     except Exception as e:
         return None, f"❌ Gagal load model: {e}"
-    for path in local_paths:
-        if os.path.exists(path):
-            try:
-                model = joblib.load(path)
-                return model, f"✅ Model AutoML (StackEnsemble) loaded | AUC 0.9507"
-            except Exception as e:
-                continue
-
+    
     # 2. Coba Azure Blob (tanpa azureml, pakai azure-storage-blob saja)
     conn_str  = os.environ.get("AZURE_STORAGE_CONNECTION_STRING", "")
     container = os.environ.get("AZURE_CONTAINER_NAME", "dataset")
