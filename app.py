@@ -293,7 +293,15 @@ with st.sidebar:
     st.markdown("---")
 
     st.markdown("### 📡 Status")
-    st.success(model_status)
+    # Model status
+    if "AutoML" in model_status:
+        st.success("✅ Model Loaded (AutoML - Production Ready)")
+    elif "Azure Blob" in model_status:
+        st.success("☁️ Model Loaded (Azure Blob)")
+    else:
+        st.warning("⚠️ Demo Mode (Rule-based fallback)")
+    st.caption(model_status)
+
     if genai:
         st.success("✅ GitHub Models (GPT-4o-mini)")
     else:
@@ -653,7 +661,7 @@ Jawab dalam Bahasa Indonesia profesional, konkret, dan actionable."""
                         unsafe_allow_html=True)
 
     st.markdown("---")
-    with st.form("chat", clear_on_submit=True):
+    with st.form("chat_form", clear_on_submit=True):
         ci, cb = st.columns([5, 1])
         with ci:
             user_in = st.text_input("Pertanyaan:",
