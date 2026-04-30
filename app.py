@@ -649,7 +649,7 @@ Jawab dalam Bahasa Indonesia profesional, konkret, dan actionable."""
                 st.session_state.chat_history.append({"role": "user", "content": q})
                 with st.spinner("🤖 ..."):
                     reply = call_genai(genai, SYSTEM, q,
-                                       history=st.session_state.chat_historyt[:-1], max_tokens=500)
+                                       history=st.session_state.chat_history[:-1], max_tokens=500)
                 st.session_state.chat_history.append({"role": "assistant", "content": reply})
                 st.rerun()
 
