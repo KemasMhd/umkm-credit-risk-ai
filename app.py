@@ -3,8 +3,7 @@ UMKM Credit Risk AI — Streamlit Demo App
 Datathon: Ekonomi Digital & Inklusi Keuangan
 """
 
-import os, io, warnings, sys, types, importlib.abc, importlib.util
-from pathlib import Path
+import os, io, warnings
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -168,208 +167,32 @@ def plot_shap(shap_vals, features, title):
     plt.tight_layout()
     return fig
 
-def is_git_lfs_pointer(path):
-    try:
-        with open(path, "rb") as handle:
-            header = handle.read(200).decode("utf-8", errors="ignore")
-        return header.startswith("version https://git-lfs.github.com/spec/v1")
-    except Exception:
-        return False
-
-def get_runtime_setting(name, default=""):
-    value = os.environ.get(name, "").strip()
-    if value:
-        return value
-    try:
-        if hasattr(st, "secrets") and name in st.secrets:
-            secret_value = st.secrets.get(name, default)
-            return str(secret_value).strip() if secret_value is not None else default
-    except Exception:
-        pass
-    return default
-
-def install_azureml_unpickle_shims():
-    """Install a lightweight import hook so AzureML pickles can be loaded
-    without the full azureml package in Streamlit Cloud.
-
-    The loaded object is still the original serialized model state; this only
-    provides missing module/class names during unpickling.
-    """
-    if getattr(install_azureml_unpickle_shims, "_installed", False):
-        return
-
-    for module_name in list(sys.modules):
-        if module_name == "azureml" or module_name.startswith("azureml."):
-            del sys.modules[module_name]
-
-    class AzureMLShimMeta(type):
-        def __getattr__(cls, name):
-            if name in {"_wrap_in_lst", "_wrap_in_list", "_ensure_list"}:
-                def _wrap(value):
-                    if value is None:
-                        return []
-                    if isinstance(value, list):
-                        return value
-                    if isinstance(value, tuple):
-                        return list(value)
-                    return [value]
-
-                def _wrap_method(value):
-                    return _wrap(value)
-
-                _wrap_method.__name__ = name
-                _wrap_method.__module__ = cls.__module__
-                return _wrap_method
-
-            if name[:1].isupper():
-                shim_type = type(name, (cls,), {})
-                shim_type.__module__ = cls.__module__
-                return shim_type
-
-            def _shim_function(*args, **kwargs):
-                return None
-
-            _shim_function.__name__ = name
-            _shim_function.__module__ = cls.__module__
-            return _shim_function
-
-    class AzureMLShimBase(metaclass=AzureMLShimMeta):
-        def __init__(self, *args, **kwargs):
-            self._shim_args = args
-            self._shim_kwargs = kwargs
-
-        @classmethod
-        def _wrap_in_lst(cls, value):
-            if value is None:
-                return []
-            if isinstance(value, list):
-                return value
-            if isinstance(value, tuple):
-                return list(value)
-            return [value]
-
-        @classmethod
-        def _wrap_in_list(cls, value):
-            return cls._wrap_in_lst(value)
-
-        @classmethod
-        def _ensure_list(cls, value):
-            return cls._wrap_in_lst(value)
-
-        def __setstate__(self, state):
-            if isinstance(state, dict):
-                self.__dict__.update(state)
-            else:
-                self._shim_state = state
-
-        def __getstate__(self):
-            return self.__dict__
-
-        def __getattr__(self, name):
-            if name in self.__dict__:
-                return self.__dict__[name]
-            raise AttributeError(name)
-
-        def __repr__(self):
-            return f"<{self.__class__.__module__}.{self.__class__.__name__} shim>"
-
-    def make_shim_type(module_name, attr_name):
-        shim_type = type(attr_name, (AzureMLShimBase,), {})
-        shim_type.__module__ = module_name
-        return shim_type
-
-    class AzureMLShimLoader(importlib.abc.Loader):
-        def create_module(self, spec):
-            return types.ModuleType(spec.name)
-
-        def exec_module(self, module):
-            module.__path__ = []
-
-            def _module_getattr(name):
-                cached = module.__dict__.get(name)
-                if cached is not None:
-                    return cached
-                if name[:1].isupper():
-                    shim_type = make_shim_type(module.__name__, name)
-                    module.__dict__[name] = shim_type
-                    return shim_type
-
-                def _shim_function(*args, **kwargs):
-                    return AzureMLShimBase(*args, **kwargs)
-
-                _shim_function.__name__ = name
-                _shim_function.__module__ = module.__name__
-                module.__dict__[name] = _shim_function
-                return _shim_function
-
-            module.__getattr__ = _module_getattr
-
-    class AzureMLShimFinder(importlib.abc.MetaPathFinder):
-        def find_spec(self, fullname, path, target=None):
-            if fullname == "azureml" or fullname.startswith("azureml."):
-                return importlib.util.spec_from_loader(fullname, AzureMLShimLoader(), is_package=True)
-            return None
-
-    sys.meta_path.insert(0, AzureMLShimFinder())
-    install_azureml_unpickle_shims._installed = True
-
 # ─── Load Model ───────────────────────────────────────────────────────────────
 @st.cache_resource
 def load_model():
-    """
-    Load model dengan urutan prioritas:
-    1. Local file best_model.pkl (di repo GitHub)
-    2. Azure Blob Storage (opsional)
-    3. Rule-based fallback
-    """
-    import joblib
+    import joblib, gdown
 
-    install_azureml_unpickle_shims()
-
-    repo_root = Path(__file__).resolve().parent
-    model_candidates = []
-
-    model_path_env = os.environ.get("MODEL_PATH", "").strip()
-    if model_path_env:
-        model_candidates.append(Path(model_path_env).expanduser())
-
-    model_candidates.extend([
-        repo_root / "model" / "best_model.pkl",
-        Path("model/best_model.pkl"),
-        Path("best_model.pkl"),
-    ])
-
-    # 1. Coba load dari local file (repo / env path)
-    load_errors = []
-    lfs_pointer_paths = []
-    for path in model_candidates:
-        if path.exists():
-            if is_git_lfs_pointer(path):
-                lfs_pointer_paths.append(str(path))
-                continue
+    # 1. Coba local file dulu
+    local_paths = ["./best_model.pkl", "best_model.pkl"]
+    for path in local_paths:
+        if os.path.exists(path):
             try:
                 model = joblib.load(path)
-                return model, f"✅ Model AutoML (StackEnsemble) loaded dari {path} | AUC 0.9507"
-            except Exception as e:
-                load_errors.append(f"{path}: {e}")
+                return model, "✅ Model AutoML (StackEnsemble) loaded | AUC 0.9507"
+            except:
+                continue
 
-    # 2. Coba Azure Blob (pakai shim unpickle untuk model AzureML bila perlu)
-    conn_str  = get_runtime_setting("AZURE_STORAGE_CONNECTION_STRING")
-    container = get_runtime_setting("AZURE_CONTAINER_NAME", "dataset")
-    blob_name  = get_runtime_setting("AZURE_BLOB_MODEL_NAME", "models/best_model.pkl")
-    if conn_str:
-        try:
-            from azure.storage.blob import BlobServiceClient
-            import tempfile
-            client = BlobServiceClient.from_connection_string(conn_str)
-            blob   = client.get_blob_client(container=container, blob=blob_name)
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pkl") as tmp:
-                tmp.write(blob.download_blob().readall())
-                tmp_path = tmp.name
-            model = joblib.load(tmp_path)
-            return model, f"✅ Model AutoML loaded dari Azure Blob ({container}/{blob_name})"
-        except Exception as e:
-            load_errors.append(f"Azure Blob {container}/{blob_name}: {e}")
+    # 2. Download dari Google Drive
+    FILE_ID = "1XuLxQHwaNlgtS6nMcxLPLoGIhdpePsPBneRzqpcDWLM"  # ← ganti ini!
+    gdrive_url = f"https://drive.google.com/uc?id={FILE_ID}"
+
+    try:
+        with st.spinner("⏳ Loading model dari Google Drive..."):
+            gdown.download(gdrive_url, "best_model.pkl", quiet=False)
+        model = joblib.load("best_model.pkl")
+        return model, "✅ Model AutoML (StackEnsemble) loaded | AUC 0.9507"
+    except Exception as e:
+        pass
 
     # 3. Fallback rule-based
     class RuleModel:
@@ -388,16 +211,7 @@ def load_model():
         def predict(self, X):
             return (self.predict_proba(X)[:, 1] >= 0.5).astype(int)
 
-    if lfs_pointer_paths:
-        return RuleModel(), (
-            "⚠️ Demo mode — file model masih Git LFS pointer, bukan binary asli. "
-            "Commit ulang model/best_model.pkl sebagai file biasa ke GitHub, atau pindahkan model ke Azure Blob/GitHub Release."
-        )
-
-    if load_errors:
-        return RuleModel(), f"⚠️ Demo mode — model ada, tetapi gagal dimuat ({load_errors[0]}); cek kompatibilitas file/versi dependency"
-
-    return RuleModel(), "⚠️ Demo mode — upload model/best_model.pkl ke repo untuk model asli"
+    return RuleModel(), "⚠️ Demo mode — model sedang tidak tersedia"
 
 # ─── SHAP Approximation ───────────────────────────────────────────────────────
 def estimate_shap(model, input_df):
@@ -788,8 +602,8 @@ KONTEKS INDONESIA:
 
 Jawab dalam Bahasa Indonesia profesional, konkret, dan actionable."""
 
-    if "chat_history" not in st.session_state:
-        st.session_state.chat_history = []
+    if "chat" not in st.session_state:
+        st.session_state.chat = []
 
     st.markdown("**💬 Pertanyaan cepat:**")
     qs = [
@@ -804,22 +618,22 @@ Jawab dalam Bahasa Indonesia profesional, konkret, dan actionable."""
     for i, q in enumerate(qs):
         with qc[i % 3]:
             if st.button(q, key=f"q{i}", use_container_width=True):
-                st.session_state.chat_history.append({"role": "user", "content": q})
+                st.session_state.chat.append({"role": "user", "content": q})
                 with st.spinner("🤖 ..."):
                     reply = call_genai(genai, SYSTEM, q,
-                                       history=st.session_state.chat_history[:-1], max_tokens=500)
-                st.session_state.chat_history.append({"role": "assistant", "content": reply})
+                                       history=st.session_state.chat[:-1], max_tokens=500)
+                st.session_state.chat.append({"role": "assistant", "content": reply})
                 st.rerun()
 
     st.markdown("---")
 
-    if not st.session_state.chat_history:
+    if not st.session_state.chat:
         st.markdown("""<div style='text-align:center; color:gray; padding:2rem;'>
         🤖 Halo! Saya UMKM Credit AI Advisor.<br>
         Klik pertanyaan di atas atau ketik pertanyaanmu sendiri.
         </div>""", unsafe_allow_html=True)
 
-    for msg in st.session_state.chat_history:
+    for msg in st.session_state.chat:
         if msg["role"] == "user":
             st.markdown(f"<div class='chat-user'>👤 <b>Kamu</b><br>{msg['content']}</div>",
                         unsafe_allow_html=True)
@@ -828,7 +642,7 @@ Jawab dalam Bahasa Indonesia profesional, konkret, dan actionable."""
                         unsafe_allow_html=True)
 
     st.markdown("---")
-    with st.form("ai_advisor_chat_form", clear_on_submit=True):
+    with st.form("chat", clear_on_submit=True):
         ci, cb = st.columns([5, 1])
         with ci:
             user_in = st.text_input("Pertanyaan:",
@@ -838,16 +652,16 @@ Jawab dalam Bahasa Indonesia profesional, konkret, dan actionable."""
             sent = st.form_submit_button("Kirim 📤", use_container_width=True)
 
     if sent and user_in.strip():
-        st.session_state.chat_history.append({"role": "user", "content": user_in})
+        st.session_state.chat.append({"role": "user", "content": user_in})
         with st.spinner("🤖 ..."):
             reply = call_genai(genai, SYSTEM, user_in,
-                               history=st.session_state.chat_history[:-1], max_tokens=500)
-        st.session_state.chat_history.append({"role": "assistant", "content": reply})
+                               history=st.session_state.chat[:-1], max_tokens=500)
+        st.session_state.chat.append({"role": "assistant", "content": reply})
         st.rerun()
 
-    if st.session_state.chat_history:
+    if st.session_state.chat:
         if st.button("🗑️ Hapus Riwayat", type="secondary"):
-            st.session_state.chat_history = []
+            st.session_state.chat = []
             st.rerun()
 
 # ══════════════════════════════════════════════════════════════════════════════
