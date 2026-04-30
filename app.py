@@ -206,6 +206,24 @@ def install_azureml_unpickle_shims():
             self._shim_args = args
             self._shim_kwargs = kwargs
 
+        @classmethod
+        def _wrap_in_lst(cls, value):
+            if value is None:
+                return []
+            if isinstance(value, list):
+                return value
+            if isinstance(value, tuple):
+                return list(value)
+            return [value]
+
+        @classmethod
+        def _wrap_in_list(cls, value):
+            return cls._wrap_in_lst(value)
+
+        @classmethod
+        def _ensure_list(cls, value):
+            return cls._wrap_in_lst(value)
+
         def __setstate__(self, state):
             if isinstance(state, dict):
                 self.__dict__.update(state)
