@@ -195,13 +195,45 @@ def install_azureml_unpickle_shims():
     The loaded object is still the original serialized model state; this only
     provides missing module/class names during unpickling.
     """
-    if any(name == "azureml" or name.startswith("azureml.") for name in sys.modules):
-        return
-
     if getattr(install_azureml_unpickle_shims, "_installed", False):
         return
 
-    class AzureMLShimBase:
+    for module_name in list(sys.modules):
+        if module_name == "azureml" or module_name.startswith("azureml."):
+            del sys.modules[module_name]
+
+    class AzureMLShimMeta(type):
+        def __getattr__(cls, name):
+            if name in {"_wrap_in_lst", "_wrap_in_list", "_ensure_list"}:
+                def _wrap(value):
+                    if value is None:
+                        return []
+                    if isinstance(value, list):
+                        return value
+                    if isinstance(value, tuple):
+                        return list(value)
+                    return [value]
+
+                def _wrap_method(value):
+                    return _wrap(value)
+
+                _wrap_method.__name__ = name
+                _wrap_method.__module__ = cls.__module__
+                return _wrap_method
+
+            if name[:1].isupper():
+                shim_type = type(name, (cls,), {})
+                shim_type.__module__ = cls.__module__
+                return shim_type
+
+            def _shim_function(*args, **kwargs):
+                return None
+
+            _shim_function.__name__ = name
+            _shim_function.__module__ = cls.__module__
+            return _shim_function
+
+    class AzureMLShimBase(metaclass=AzureMLShimMeta):
         def __init__(self, *args, **kwargs):
             self._shim_args = args
             self._shim_kwargs = kwargs
