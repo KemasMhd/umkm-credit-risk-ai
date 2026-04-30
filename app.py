@@ -3,7 +3,7 @@ UMKM Credit Risk AI — Streamlit Demo App
 Datathon: Ekonomi Digital & Inklusi Keuangan
 """
 
-import os, io, warnings
+import os, io, warnings, sys, types, importlib.abc, importlib.util
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -188,6 +188,81 @@ def get_runtime_setting(name, default=""):
         pass
     return default
 
+def install_azureml_unpickle_shims():
+    """Install a lightweight import hook so AzureML pickles can be loaded
+    without the full azureml package in Streamlit Cloud.
+
+    The loaded object is still the original serialized model state; this only
+    provides missing module/class names during unpickling.
+    """
+    if any(name == "azureml" or name.startswith("azureml.") for name in sys.modules):
+        return
+
+    if getattr(install_azureml_unpickle_shims, "_installed", False):
+        return
+
+    class AzureMLShimBase:
+        def __init__(self, *args, **kwargs):
+            self._shim_args = args
+            self._shim_kwargs = kwargs
+
+        def __setstate__(self, state):
+            if isinstance(state, dict):
+                self.__dict__.update(state)
+            else:
+                self._shim_state = state
+
+        def __getstate__(self):
+            return self.__dict__
+
+        def __getattr__(self, name):
+            if name in self.__dict__:
+                return self.__dict__[name]
+            raise AttributeError(name)
+
+        def __repr__(self):
+            return f"<{self.__class__.__module__}.{self.__class__.__name__} shim>"
+
+    def make_shim_type(module_name, attr_name):
+        shim_type = type(attr_name, (AzureMLShimBase,), {})
+        shim_type.__module__ = module_name
+        return shim_type
+
+    class AzureMLShimLoader(importlib.abc.Loader):
+        def create_module(self, spec):
+            return types.ModuleType(spec.name)
+
+        def exec_module(self, module):
+            module.__path__ = []
+
+            def _module_getattr(name):
+                cached = module.__dict__.get(name)
+                if cached is not None:
+                    return cached
+                if name[:1].isupper():
+                    shim_type = make_shim_type(module.__name__, name)
+                    module.__dict__[name] = shim_type
+                    return shim_type
+
+                def _shim_function(*args, **kwargs):
+                    return AzureMLShimBase(*args, **kwargs)
+
+                _shim_function.__name__ = name
+                _shim_function.__module__ = module.__name__
+                module.__dict__[name] = _shim_function
+                return _shim_function
+
+            module.__getattr__ = _module_getattr
+
+    class AzureMLShimFinder(importlib.abc.MetaPathFinder):
+        def find_spec(self, fullname, path, target=None):
+            if fullname == "azureml" or fullname.startswith("azureml."):
+                return importlib.util.spec_from_loader(fullname, AzureMLShimLoader(), is_package=True)
+            return None
+
+    sys.meta_path.insert(0, AzureMLShimFinder())
+    install_azureml_unpickle_shims._installed = True
+
 # ─── Load Model ───────────────────────────────────────────────────────────────
 @st.cache_resource
 def load_model():
@@ -198,6 +273,8 @@ def load_model():
     3. Rule-based fallback
     """
     import joblib
+
+    install_azureml_unpickle_shims()
 
     repo_root = Path(__file__).resolve().parent
     model_candidates = []
@@ -226,7 +303,7 @@ def load_model():
             except Exception as e:
                 load_errors.append(f"{path}: {e}")
 
-    # 2. Coba Azure Blob (tanpa azureml, pakai azure-storage-blob saja)
+    # 2. Coba Azure Blob (pakai shim unpickle untuk model AzureML bila perlu)
     conn_str  = get_runtime_setting("AZURE_STORAGE_CONNECTION_STRING")
     container = get_runtime_setting("AZURE_CONTAINER_NAME", "dataset")
     blob_name  = get_runtime_setting("AZURE_BLOB_MODEL_NAME", "models/best_model.pkl")
