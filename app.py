@@ -630,8 +630,8 @@ KONTEKS INDONESIA:
 
 Jawab dalam Bahasa Indonesia profesional, konkret, dan actionable."""
 
-    if "chat" not in st.session_state:
-        st.session_state.chat = []
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
 
     st.markdown("**💬 Pertanyaan cepat:**")
     qs = [
@@ -646,22 +646,22 @@ Jawab dalam Bahasa Indonesia profesional, konkret, dan actionable."""
     for i, q in enumerate(qs):
         with qc[i % 3]:
             if st.button(q, key=f"q{i}", use_container_width=True):
-                st.session_state.chat.append({"role": "user", "content": q})
+                st.session_state.chat_history.append({"role": "user", "content": q})
                 with st.spinner("🤖 ..."):
                     reply = call_genai(genai, SYSTEM, q,
-                                       history=st.session_state.chat[:-1], max_tokens=500)
-                st.session_state.chat.append({"role": "assistant", "content": reply})
+                                       history=st.session_state.chat_historyt[:-1], max_tokens=500)
+                st.session_state.chat_history.append({"role": "assistant", "content": reply})
                 st.rerun()
 
     st.markdown("---")
 
-    if not st.session_state.chat:
+    if not st.session_state.chat_history:
         st.markdown("""<div style='text-align:center; color:gray; padding:2rem;'>
         🤖 Halo! Saya UMKM Credit AI Advisor.<br>
         Klik pertanyaan di atas atau ketik pertanyaanmu sendiri.
         </div>""", unsafe_allow_html=True)
 
-    for msg in st.session_state.chat:
+    for msg in st.session_state.chat_history:
         if msg["role"] == "user":
             st.markdown(f"<div class='chat-user'>👤 <b>Kamu</b><br>{msg['content']}</div>",
                         unsafe_allow_html=True)
@@ -670,7 +670,7 @@ Jawab dalam Bahasa Indonesia profesional, konkret, dan actionable."""
                         unsafe_allow_html=True)
 
     st.markdown("---")
-    with st.form("chat", clear_on_submit=True):
+    with st.form("chat_form", clear_on_submit=True):
         ci, cb = st.columns([5, 1])
         with ci:
             user_in = st.text_input("Pertanyaan:",
@@ -680,16 +680,16 @@ Jawab dalam Bahasa Indonesia profesional, konkret, dan actionable."""
             sent = st.form_submit_button("Kirim 📤", use_container_width=True)
 
     if sent and user_in.strip():
-        st.session_state.chat.append({"role": "user", "content": user_in})
+        st.session_state.chat_history.append({"role": "user", "content": user_in})
         with st.spinner("🤖 ..."):
             reply = call_genai(genai, SYSTEM, user_in,
-                               history=st.session_state.chat[:-1], max_tokens=500)
-        st.session_state.chat.append({"role": "assistant", "content": reply})
+                               history=st.session_state.chat_history[:-1], max_tokens=500)
+        st.session_state.chat_history.append({"role": "assistant", "content": reply})
         st.rerun()
 
-    if st.session_state.chat:
+    if st.session_state.chat_history:
         if st.button("🗑️ Hapus Riwayat", type="secondary"):
-            st.session_state.chat = []
+            st.session_state.chat_history = []
             st.rerun()
 
 # ══════════════════════════════════════════════════════════════════════════════
