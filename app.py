@@ -4,6 +4,7 @@ Datathon: Ekonomi Digital & Inklusi Keuangan
 """
 
 import os, io, warnings
+from pathlib import Path
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -178,15 +179,28 @@ def load_model():
     """
     import joblib
 
-    # 1. Coba load dari local file (di repo GitHub)
-    local_paths = ["/workspaces/umkm-credit-risk-ai/model/best_model.pkl", "best_model.pkl"]
-    for path in local_paths:
-        if os.path.exists(path):
+    repo_root = Path(__file__).resolve().parent
+    model_candidates = []
+
+    model_path_env = os.environ.get("MODEL_PATH", "").strip()
+    if model_path_env:
+        model_candidates.append(Path(model_path_env).expanduser())
+
+    model_candidates.extend([
+        repo_root / "model" / "best_model.pkl",
+        Path("model/best_model.pkl"),
+        Path("best_model.pkl"),
+    ])
+
+    # 1. Coba load dari local file (repo / env path)
+    load_errors = []
+    for path in model_candidates:
+        if path.exists():
             try:
                 model = joblib.load(path)
-                return model, f"✅ Model AutoML (StackEnsemble) loaded | AUC 0.9507"
+                return model, f"✅ Model AutoML (StackEnsemble) loaded dari {path} | AUC 0.9507"
             except Exception as e:
-                continue
+                load_errors.append(f"{path}: {e}")
 
     # 2. Coba Azure Blob (tanpa azureml, pakai azure-storage-blob saja)
     conn_str  = os.environ.get("AZURE_STORAGE_CONNECTION_STRING", "")
@@ -222,7 +236,10 @@ def load_model():
         def predict(self, X):
             return (self.predict_proba(X)[:, 1] >= 0.5).astype(int)
 
-    return RuleModel(), "⚠️ Demo mode — upload best_model.pkl ke repo untuk model asli"
+    if load_errors:
+        return RuleModel(), "⚠️ Demo mode — model ada, tetapi gagal dimuat; cek kompatibilitas file/versi dependency"
+
+    return RuleModel(), "⚠️ Demo mode — upload model/best_model.pkl ke repo untuk model asli"
 
 # ─── SHAP Approximation ───────────────────────────────────────────────────────
 def estimate_shap(model, input_df):
@@ -613,8 +630,8 @@ KONTEKS INDONESIA:
 
 Jawab dalam Bahasa Indonesia profesional, konkret, dan actionable."""
 
-    if "chat" not in st.session_state:
-        st.session_state.chat = []
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
 
     st.markdown("**💬 Pertanyaan cepat:**")
     qs = [
@@ -629,22 +646,22 @@ Jawab dalam Bahasa Indonesia profesional, konkret, dan actionable."""
     for i, q in enumerate(qs):
         with qc[i % 3]:
             if st.button(q, key=f"q{i}", use_container_width=True):
-                st.session_state.chat.append({"role": "user", "content": q})
+                st.session_state.chat_history.append({"role": "user", "content": q})
                 with st.spinner("🤖 ..."):
                     reply = call_genai(genai, SYSTEM, q,
-                                       history=st.session_state.chat[:-1], max_tokens=500)
-                st.session_state.chat.append({"role": "assistant", "content": reply})
+                                       history=st.session_state.chat_history[:-1], max_tokens=500)
+                st.session_state.chat_history.append({"role": "assistant", "content": reply})
                 st.rerun()
 
     st.markdown("---")
 
-    if not st.session_state.chat:
+    if not st.session_state.chat_history:
         st.markdown("""<div style='text-align:center; color:gray; padding:2rem;'>
         🤖 Halo! Saya UMKM Credit AI Advisor.<br>
         Klik pertanyaan di atas atau ketik pertanyaanmu sendiri.
         </div>""", unsafe_allow_html=True)
 
-    for msg in st.session_state.chat:
+    for msg in st.session_state.chat_history:
         if msg["role"] == "user":
             st.markdown(f"<div class='chat-user'>👤 <b>Kamu</b><br>{msg['content']}</div>",
                         unsafe_allow_html=True)
@@ -653,7 +670,7 @@ Jawab dalam Bahasa Indonesia profesional, konkret, dan actionable."""
                         unsafe_allow_html=True)
 
     st.markdown("---")
-    with st.form("chat", clear_on_submit=True):
+    with st.form("ai_advisor_chat_form", clear_on_submit=True):
         ci, cb = st.columns([5, 1])
         with ci:
             user_in = st.text_input("Pertanyaan:",
@@ -663,16 +680,16 @@ Jawab dalam Bahasa Indonesia profesional, konkret, dan actionable."""
             sent = st.form_submit_button("Kirim 📤", use_container_width=True)
 
     if sent and user_in.strip():
-        st.session_state.chat.append({"role": "user", "content": user_in})
+        st.session_state.chat_history.append({"role": "user", "content": user_in})
         with st.spinner("🤖 ..."):
             reply = call_genai(genai, SYSTEM, user_in,
-                               history=st.session_state.chat[:-1], max_tokens=500)
-        st.session_state.chat.append({"role": "assistant", "content": reply})
+                               history=st.session_state.chat_history[:-1], max_tokens=500)
+        st.session_state.chat_history.append({"role": "assistant", "content": reply})
         st.rerun()
 
-    if st.session_state.chat:
+    if st.session_state.chat_history:
         if st.button("🗑️ Hapus Riwayat", type="secondary"):
-            st.session_state.chat = []
+            st.session_state.chat_history = []
             st.rerun()
 
 # ══════════════════════════════════════════════════════════════════════════════
