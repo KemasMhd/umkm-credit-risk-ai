@@ -13,16 +13,17 @@ import matplotlib.patches as mpatches
 warnings.filterwarnings("ignore")
 
 # Meta tag untuk verifikasi Dicoding
-st.markdown(
-    '<meta name="dicoding:email" content="kemasmuhammadriskiaditia@gmail.com">',
-    unsafe_allow_html=True
-)
 
 st.set_page_config(
     page_title="UMKM Credit Risk AI",
     page_icon="🏦",
     layout="wide",
     initial_sidebar_state="expanded"
+)
+
+st.markdown(
+    '<meta name="dicoding:email" content="kemasmuhammadriskiaditia@gmail.com">',
+    unsafe_allow_html=True
 )
 
 st.markdown("""
