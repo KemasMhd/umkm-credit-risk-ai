@@ -480,35 +480,35 @@ elif page == "🔍 Credit Scorer":
         }
 
     st.markdown("---")
+st.markdown("---")
     if st.button("🚀 Analisis Risiko Kredit", type="primary", use_container_width=True):
         # Encode input untuk LightGBM model
-input_df = pd.DataFrame([input_data])[MODEL_FEATURES]
+        input_df = pd.DataFrame([input_data])[MODEL_FEATURES]
 
-# Encode categorical & boolean columns
-from sklearn.preprocessing import LabelEncoder
-cat_map = {
-    'person_home_ownership': ['RENT','OWN','MORTGAGE','OTHER'],
-    'loan_intent': ['PERSONAL','VENTURE','EDUCATION',
-                    'MEDICAL','HOMEIMPROVEMENT','DEBTCONSOLIDATION'],
-    'loan_grade': ['A','B','C','D','E','F','G'],
-    'emp_stability_score': ['low','medium','high'],
-    'age_group': ['<=25','26-35','36-45','>45'],
-    'income_quartile': ['Q1','Q2','Q3','Q4'],
-    'interest_risk_band': ['low','medium','high','very_high']
-}
-for col, categories in cat_map.items():
-    if col in input_df.columns:
-        input_df[col] = pd.Categorical(
-            input_df[col], categories=categories
-        ).codes
+        # Encode categorical & boolean columns
+        from sklearn.preprocessing import LabelEncoder
+        cat_map = {
+            'person_home_ownership': ['RENT','OWN','MORTGAGE','OTHER'],
+            'loan_intent': ['PERSONAL','VENTURE','EDUCATION',
+                            'MEDICAL','HOMEIMPROVEMENT','DEBTCONSOLIDATION'],
+            'loan_grade': ['A','B','C','D','E','F','G'],
+            'emp_stability_score': ['low','medium','high'],
+            'age_group': ['<=25','26-35','36-45','>45'],
+            'income_quartile': ['Q1','Q2','Q3','Q4'],
+            'interest_risk_band': ['low','medium','high','very_high']
+        }
+        for col, categories in cat_map.items():
+            if col in input_df.columns:
+                input_df[col] = pd.Categorical(
+                    input_df[col], categories=categories
+                ).codes
 
-bool_cols = ['cb_person_default_on_file']
-for col in bool_cols:
-    if col in input_df.columns:
-        input_df[col] = input_df[col].astype(int)
+        bool_cols = ['cb_person_default_on_file']
+        for col in bool_cols:
+            if col in input_df.columns:
+                input_df[col] = input_df[col].astype(int)
 
-input_df = input_df.astype(float)
-
+        input_df = input_df.astype(float)
         with st.spinner("⏳ Model sedang menganalisis..."):
             prob  = model.predict_proba(input_df)[0][1]
             pred  = int(prob >= 0.5)
