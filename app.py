@@ -179,7 +179,28 @@ def load_model():
     import joblib
 
     # 1. Coba load dari local file (di repo GitHub)
-    local_paths = ["model/best_model.pkl", "best_model.pkl"]
+    import joblib
+import gdown
+import os
+
+def load_model():
+    MODEL_PATH = "best_model.pkl"
+    FILE_ID = "1yBlsh6nY6NRG2ACqsBECd2XP50o8MIO2"
+
+    # Download jika belum ada
+    if not os.path.exists(MODEL_PATH):
+        try:
+            url = f"https://drive.google.com/uc?id={FILE_ID}"
+            gdown.download(url, MODEL_PATH, quiet=False)
+        except Exception as e:
+            return None, f"❌ Gagal download model: {e}"
+
+    # Load model
+    try:
+        model = joblib.load(MODEL_PATH)
+        return model, "✅ Model Loaded (AutoML - Production Ready)"
+    except Exception as e:
+        return None, f"❌ Gagal load model: {e}"
     for path in local_paths:
         if os.path.exists(path):
             try:
