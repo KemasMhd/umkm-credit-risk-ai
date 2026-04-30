@@ -173,24 +173,26 @@ def load_model():
     import joblib, gdown
 
     # 1. Coba local file dulu
-    local_paths = ["./best_model.pkl", "best_model.pkl"]
-    for path in local_paths:
+    for path in ["./lgbm_model.pkl", "lgbm_model.pkl",
+                 "./best_model.pkl", "best_model.pkl"]:
         if os.path.exists(path):
             try:
                 model = joblib.load(path)
-                return model, "✅ Model AutoML (StackEnsemble) loaded | AUC 0.9507"
+                return model, "✅ Model LightGBM loaded | AUC 0.95+"
             except:
                 continue
 
     # 2. Download dari Google Drive
-    FILE_ID = "1yBlsh6nY6NRG2ACqsBECd2XP50o8MIO2"  # ← ganti ini!
-    gdrive_url = f"https://drive.google.com/uc?id={FILE_ID}"
-
+    FILE_ID = "19wDA6Gr_R15Qp7BjqKTcNBz7yERb9e09"  # ← ganti ini!
     try:
-        with st.spinner("⏳ Loading model dari Google Drive..."):
-            gdown.download(gdrive_url, "best_model.pkl", quiet=False)
-        model = joblib.load("best_model.pkl")
-        return model, "✅ Model AutoML (StackEnsemble) loaded | AUC 0.9507"
+        with st.spinner("⏳ Loading model..."):
+            gdown.download(
+                f"https://drive.google.com/uc?id={FILE_ID}",
+                "lgbm_model.pkl",
+                quiet=False
+            )
+        model = joblib.load("lgbm_model.pkl")
+        return model, "✅ Model LightGBM loaded | AUC 0.95+"
     except Exception as e:
         pass
 
