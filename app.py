@@ -481,7 +481,7 @@ elif page == "🔍 Credit Scorer":
 
     st.markdown("---")
 st.markdown("---")
-    if st.button("🚀 Analisis Risiko Kredit", type="primary", use_container_width=True):
+if st.button("🚀 Analisis Risiko Kredit", type="primary", use_container_width=True):
         # Encode input untuk LightGBM model
         input_df = pd.DataFrame([input_data])[MODEL_FEATURES]
 
