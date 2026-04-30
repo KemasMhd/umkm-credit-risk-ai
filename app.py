@@ -168,6 +168,14 @@ def plot_shap(shap_vals, features, title):
     plt.tight_layout()
     return fig
 
+def is_git_lfs_pointer(path):
+    try:
+        with open(path, "rb") as handle:
+            header = handle.read(200).decode("utf-8", errors="ignore")
+        return header.startswith("version https://git-lfs.github.com/spec/v1")
+    except Exception:
+        return False
+
 # ─── Load Model ───────────────────────────────────────────────────────────────
 @st.cache_resource
 def load_model():
@@ -194,8 +202,12 @@ def load_model():
 
     # 1. Coba load dari local file (repo / env path)
     load_errors = []
+    lfs_pointer_paths = []
     for path in model_candidates:
         if path.exists():
+            if is_git_lfs_pointer(path):
+                lfs_pointer_paths.append(str(path))
+                continue
             try:
                 model = joblib.load(path)
                 return model, f"✅ Model AutoML (StackEnsemble) loaded dari {path} | AUC 0.9507"
@@ -236,8 +248,14 @@ def load_model():
         def predict(self, X):
             return (self.predict_proba(X)[:, 1] >= 0.5).astype(int)
 
+    if lfs_pointer_paths:
+        return RuleModel(), (
+            "⚠️ Demo mode — file model masih Git LFS pointer, bukan binary asli. "
+            "Commit ulang model/best_model.pkl sebagai file biasa ke GitHub, atau pindahkan model ke Azure Blob/GitHub Release."
+        )
+
     if load_errors:
-        return RuleModel(), "⚠️ Demo mode — model ada, tetapi gagal dimuat; cek kompatibilitas file/versi dependency"
+        return RuleModel(), f"⚠️ Demo mode — model ada, tetapi gagal dimuat ({load_errors[0]}); cek kompatibilitas file/versi dependency"
 
     return RuleModel(), "⚠️ Demo mode — upload model/best_model.pkl ke repo untuk model asli"
 
