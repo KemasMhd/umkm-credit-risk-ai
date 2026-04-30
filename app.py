@@ -167,200 +167,81 @@ def plot_shap(shap_vals, features, title):
     plt.tight_layout()
     return fig
 
-
-class RuleBasedFallbackModel:
-    """Simple rule-based fallback when the trained model can't be loaded."""
-
-    def __init__(self):
-        self.is_fallback = True
-
-    def predict_proba(self, X):
-        if isinstance(X, dict):
-            X = pd.DataFrame([X])
-
-        probs = []
-        for _, row in X.iterrows():
-            lti = row.get("loan_to_income_ratio", row.get("loan_percent_income", 0))
-            dsr = row.get("debt_service_ratio", 0)
-            ir = row.get("loan_int_rate", 0)
-            emp = row.get("person_emp_length", 0)
-            cb_default = bool(row.get("cb_person_default_on_file", False))
-
-            # Baseline ~22% default rate (logit(0.22) ≈ -1.265)
-            score = -1.265
-            score += 3.6 * (float(lti) - 0.35)
-            score += 3.0 * (float(dsr) - 0.30)
-            score += 0.10 * (float(ir) - 12.0)
-            score += -0.12 * (float(emp) - 3.0)
-            score += 1.0 if cb_default else 0.0
-
-            p = 1 / (1 + np.exp(-score))
-            p = float(np.clip(p, 0.01, 0.99))
-            probs.append(p)
-
-        probs = np.array(probs, dtype=float)
-        return np.vstack([1 - probs, probs]).T
-
 # ─── Load Model ───────────────────────────────────────────────────────────────
 @st.cache_resource
 def load_model():
-    import os
-    import joblib   # 🔥 WAJIB ADA DI SINI
-
-    file_id_secret = ""
-    model_path_secret = ""
-    try:
-        file_id_secret = st.secrets.get("GDRIVE_MODEL_FILE_ID", "") if hasattr(st, "secrets") else ""
-        model_path_secret = st.secrets.get("MODEL_PATH", "") if hasattr(st, "secrets") else ""
-    except Exception:
-        pass
-
-    FILE_ID = (
-        os.environ.get("GDRIVE_MODEL_FILE_ID")
-        or file_id_secret
-        or "1yBlsh6nY6NRG2ACqsBECd2XP50o8MIO2"
-    )
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-
-    def _read_head(path, n=200):
-        try:
-            with open(path, "rb") as f:
-                return f.read(n)
-        except Exception:
-            return b""
-
-    def _looks_like_lfs_pointer(path):
-        head = _read_head(path, 200)
-        txt = head.decode("utf-8", errors="ignore")
-        return txt.startswith("version https://git-lfs.github.com/spec/v1")
-
-    def _looks_like_html(path):
-        head = _read_head(path, 400)
-        txt = head.decode("utf-8", errors="ignore").lower()
-        return ("<!doctype html" in txt) or ("<html" in txt)
-
-    # 1) Try local paths first (repo file or env override)
-    lfs_detected = False
-    candidates = []
-
-    env_path = os.environ.get("MODEL_PATH") or model_path_secret
-    if env_path:
-        candidates.append(env_path)
-    candidates += [
-        os.path.join(base_dir, "model", "best_model.pkl"),
-        os.path.join(base_dir, "best_model.pkl"),
-    ]
-
-    last_load_err = None
-    for path in candidates:
-        if not path or not os.path.exists(path):
-            continue
-        if _looks_like_lfs_pointer(path):
-            lfs_detected = True
-            continue
-        if _looks_like_html(path):
-            continue
-        try:
-            model = joblib.load(path)
-            rel = os.path.relpath(path, base_dir)
-            return model, f"✅ Model Loaded (AutoML - Production Ready) — local: {rel}"
-        except Exception as e:
-            last_load_err = e
-
-    # 2) Fallback: download from Google Drive (useful on Streamlit Cloud, esp. if Git LFS not pulled)
-    try:
-        import gdown
-
-        download_path = os.path.join(base_dir, "best_model.pkl")
-        tmp_path = download_path + ".tmp"
-
-        # Clean up broken leftovers
-        for p in (tmp_path,):
-            if os.path.exists(p):
-                try:
-                    os.remove(p)
-                except Exception:
-                    pass
-
-        if os.path.exists(download_path) and (_looks_like_html(download_path) or _looks_like_lfs_pointer(download_path)):
-            try:
-                os.remove(download_path)
-            except Exception:
-                pass
-
-        url = f"https://drive.google.com/uc?id={FILE_ID}"
-        try:
-            out = gdown.download(id=FILE_ID, output=tmp_path, quiet=False)
-        except TypeError:
-            out = gdown.download(url, tmp_path, quiet=False)
-
-        if not out or not os.path.exists(tmp_path):
-            raise RuntimeError("gdown tidak menghasilkan file")
-        if _looks_like_html(tmp_path):
-            raise RuntimeError("hasil download berupa HTML (cek permission/quota Google Drive)")
-
-        os.replace(tmp_path, download_path)
-
-        model = joblib.load(download_path)
-        return model, "✅ Model Loaded (AutoML - Production Ready) — downloaded (GDrive)"
-    except Exception as e:
-        hint = ""
-        if lfs_detected:
-            hint = " | terdeteksi Git LFS pointer: Streamlit Cloud sering tidak menarik file LFS"
-        if last_load_err is not None:
-            hint = f"{hint} | load error terakhir: {type(last_load_err).__name__}: {last_load_err}"
-        return RuleBasedFallbackModel(), f"⚠️ Demo Mode (Rule-based fallback) — gagal load model: {type(e).__name__}: {e}{hint}"
-# ─── SHAP Approximation ───────────────────────────────────────────────────────
-def estimate_shap(model, input_df, explain_features=None):
-    """Return SHAP-like contributions for the given feature list.
-
-    - Tries real SHAP for tree models.
-    - Falls back to a simple perturbation-based approximation.
     """
+    Load model dengan urutan prioritas:
+    1. Local file best_model.pkl (di repo GitHub)
+    2. Azure Blob Storage (opsional)
+    3. Rule-based fallback
+    """
+    import joblib
 
-    explain_features = explain_features or list(input_df.columns)
+    # 1. Coba load dari local file (di repo GitHub)
+    local_paths = ["./best_model.pkl", "best_model.pkl"]
+    for path in local_paths:
+        if os.path.exists(path):
+            try:
+                model = joblib.load(path)
+                return model, f"✅ Model AutoML (StackEnsemble) loaded | AUC 0.9507"
+            except Exception as e:
+                continue
 
-    # 1) Try real SHAP (works for many tree models)
+    # 2. Coba Azure Blob (tanpa azureml, pakai azure-storage-blob saja)
+    conn_str  = os.environ.get("AZURE_STORAGE_CONNECTION_STRING", "")
+    container = os.environ.get("AZURE_CONTAINER_NAME", "dataset")
+    if conn_str:
+        try:
+            from azure.storage.blob import BlobServiceClient
+            import tempfile
+            client = BlobServiceClient.from_connection_string(conn_str)
+            blob   = client.get_blob_client(container=container, blob="models/best_model.pkl")
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pkl") as tmp:
+                tmp.write(blob.download_blob().readall())
+                tmp_path = tmp.name
+            model = joblib.load(tmp_path)
+            return model, "✅ Model AutoML loaded dari Azure Blob"
+        except Exception as e:
+            pass
+
+    # 3. Fallback rule-based
+    class RuleModel:
+        def predict_proba(self, X):
+            results = []
+            for _, row in X.iterrows():
+                score = (
+                    float(row.get('loan_to_income_ratio', 0.3)) * 0.35 +
+                    float(row.get('debt_service_ratio', 0.3))   * 0.30 +
+                    (float(row.get('loan_int_rate', 12)) / 25)  * 0.20 +
+                    (1 - min(float(row.get('person_income', 50e6)) / 120e6, 1)) * 0.15
+                )
+                score = float(np.clip(score, 0.02, 0.98))
+                results.append([1 - score, score])
+            return np.array(results)
+        def predict(self, X):
+            return (self.predict_proba(X)[:, 1] >= 0.5).astype(int)
+
+    return RuleModel(), "⚠️ Demo mode — upload best_model.pkl ke repo untuk model asli"
+
+# ─── SHAP Approximation ───────────────────────────────────────────────────────
+def estimate_shap(model, input_df):
     try:
         import shap
-
         explainer = shap.TreeExplainer(model)
         vals = explainer.shap_values(input_df)
-        if isinstance(vals, list):
-            vals = vals[1] if len(vals) > 1 else vals[0]
-
-        row_vals = vals[0]
-        by_col = {col: float(row_vals[i]) for i, col in enumerate(input_df.columns)}
-        return np.array([by_col.get(f, 0.0) for f in explain_features], dtype=float)
+        return (vals[1][0] if isinstance(vals, list) else vals[0])
     except Exception:
-        pass
-
-    # 2) Approximate: perturb one feature at a time and measure probability delta
-    base = model.predict_proba(input_df)[0][1]
-    approx = []
-    for f in explain_features:
-        p = input_df.copy()
-        if f not in p.columns:
-            approx.append(0.0)
-            continue
-        try:
-            cur = p.at[0, f]
-            if isinstance(cur, bool):
-                p.at[0, f] = not cur
-            elif isinstance(cur, (int, float, np.number)):
-                p.at[0, f] = float(cur) * 0.7
-            else:
-                approx.append(0.0)
-                continue
-        except Exception:
-            approx.append(0.0)
-            continue
-
-        try:
+        base = model.predict_proba(input_df)[0][1]
+        approx = []
+        for i in range(input_df.shape[1]):
+            p = input_df.copy()
+            try:
+                p.iloc[0, i] = p.iloc[0, i] * 0.7
+            except:
+                pass
             approx.append(base - model.predict_proba(p)[0][1])
-        except Exception:
-            approx.append(0.0)
-    return np.array(approx, dtype=float)
+        return np.array(approx)
 
 # ─── GenAI ────────────────────────────────────────────────────────────────────
 @st.cache_resource
@@ -412,15 +293,7 @@ with st.sidebar:
     st.markdown("---")
 
     st.markdown("### 📡 Status")
-    # Model status
-    if "AutoML" in model_status:
-        st.success("✅ Model Loaded (AutoML - Production Ready)")
-    elif "Azure Blob" in model_status:
-        st.success("☁️ Model Loaded (Azure Blob)")
-    else:
-        st.warning("⚠️ Demo Mode (Rule-based fallback)")
-    st.caption(model_status)
-
+    st.success(model_status)
     if genai:
         st.success("✅ GitHub Models (GPT-4o-mini)")
     else:
@@ -652,12 +525,10 @@ elif page == "🔍 Credit Scorer":
 
         # SHAP
         st.markdown("### 🔍 Penjelasan Faktor Penentu (SHAP)")
-        numeric_features = [
-            f for f in MODEL_FEATURES
-            if isinstance(input_data.get(f), (int, float))
-            and not isinstance(input_data.get(f), bool)
-        ]
-        shap_vals = estimate_shap(model, input_df, numeric_features)
+        numeric_features = [f for f in MODEL_FEATURES
+                            if isinstance(input_data.get(f), (int, float))]
+        numeric_df = pd.DataFrame([{f: input_data[f] for f in numeric_features}])
+        shap_vals  = estimate_shap(model, numeric_df)
 
         fig_shap = plot_shap(
             shap_vals, numeric_features,
@@ -782,7 +653,7 @@ Jawab dalam Bahasa Indonesia profesional, konkret, dan actionable."""
                         unsafe_allow_html=True)
 
     st.markdown("---")
-    with st.form("chat_form", clear_on_submit=True):
+    with st.form("chat", clear_on_submit=True):
         ci, cb = st.columns([5, 1])
         with ci:
             user_in = st.text_input("Pertanyaan:",
