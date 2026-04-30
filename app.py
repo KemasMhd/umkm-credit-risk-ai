@@ -176,6 +176,18 @@ def is_git_lfs_pointer(path):
     except Exception:
         return False
 
+def get_runtime_setting(name, default=""):
+    value = os.environ.get(name, "").strip()
+    if value:
+        return value
+    try:
+        if hasattr(st, "secrets") and name in st.secrets:
+            secret_value = st.secrets.get(name, default)
+            return str(secret_value).strip() if secret_value is not None else default
+    except Exception:
+        pass
+    return default
+
 # ─── Load Model ───────────────────────────────────────────────────────────────
 @st.cache_resource
 def load_model():
@@ -215,21 +227,22 @@ def load_model():
                 load_errors.append(f"{path}: {e}")
 
     # 2. Coba Azure Blob (tanpa azureml, pakai azure-storage-blob saja)
-    conn_str  = os.environ.get("AZURE_STORAGE_CONNECTION_STRING", "")
-    container = os.environ.get("AZURE_CONTAINER_NAME", "dataset")
+    conn_str  = get_runtime_setting("AZURE_STORAGE_CONNECTION_STRING")
+    container = get_runtime_setting("AZURE_CONTAINER_NAME", "dataset")
+    blob_name  = get_runtime_setting("AZURE_BLOB_MODEL_NAME", "models/best_model.pkl")
     if conn_str:
         try:
             from azure.storage.blob import BlobServiceClient
             import tempfile
             client = BlobServiceClient.from_connection_string(conn_str)
-            blob   = client.get_blob_client(container=container, blob="models/best_model.pkl")
+            blob   = client.get_blob_client(container=container, blob=blob_name)
             with tempfile.NamedTemporaryFile(delete=False, suffix=".pkl") as tmp:
                 tmp.write(blob.download_blob().readall())
                 tmp_path = tmp.name
             model = joblib.load(tmp_path)
-            return model, "✅ Model AutoML loaded dari Azure Blob"
+            return model, f"✅ Model AutoML loaded dari Azure Blob ({container}/{blob_name})"
         except Exception as e:
-            pass
+            load_errors.append(f"Azure Blob {container}/{blob_name}: {e}")
 
     # 3. Fallback rule-based
     class RuleModel:
