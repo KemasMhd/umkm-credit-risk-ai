@@ -183,7 +183,7 @@ def load_model():
                 continue
 
     # 2. Download dari Google Drive
-    FILE_ID = "1XuLxQHwaNlgtS6nMcxLPLoGIhdpePsPBneRzqpcDWLM"  # ← ganti ini!
+    FILE_ID = "1yBlsh6nY6NRG2ACqsBECd2XP50o8MIO2"  # ← ganti ini!
     gdrive_url = f"https://drive.google.com/uc?id={FILE_ID}"
 
     try:
