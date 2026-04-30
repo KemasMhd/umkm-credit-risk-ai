@@ -167,48 +167,200 @@ def plot_shap(shap_vals, features, title):
     plt.tight_layout()
     return fig
 
+
+class RuleBasedFallbackModel:
+    """Simple rule-based fallback when the trained model can't be loaded."""
+
+    def __init__(self):
+        self.is_fallback = True
+
+    def predict_proba(self, X):
+        if isinstance(X, dict):
+            X = pd.DataFrame([X])
+
+        probs = []
+        for _, row in X.iterrows():
+            lti = row.get("loan_to_income_ratio", row.get("loan_percent_income", 0))
+            dsr = row.get("debt_service_ratio", 0)
+            ir = row.get("loan_int_rate", 0)
+            emp = row.get("person_emp_length", 0)
+            cb_default = bool(row.get("cb_person_default_on_file", False))
+
+            # Baseline ~22% default rate (logit(0.22) ≈ -1.265)
+            score = -1.265
+            score += 3.6 * (float(lti) - 0.35)
+            score += 3.0 * (float(dsr) - 0.30)
+            score += 0.10 * (float(ir) - 12.0)
+            score += -0.12 * (float(emp) - 3.0)
+            score += 1.0 if cb_default else 0.0
+
+            p = 1 / (1 + np.exp(-score))
+            p = float(np.clip(p, 0.01, 0.99))
+            probs.append(p)
+
+        probs = np.array(probs, dtype=float)
+        return np.vstack([1 - probs, probs]).T
+
 # ─── Load Model ───────────────────────────────────────────────────────────────
 @st.cache_resource
 def load_model():
     import os
     import joblib   # 🔥 WAJIB ADA DI SINI
-    import gdown
 
-    MODEL_PATH = "best_model.pkl"
-    FILE_ID = "1yBlsh6nY6NRG2ACqsBECd2XP50o8MIO2"
-
-    # Download jika belum ada
-    if not os.path.exists(MODEL_PATH):
-        try:
-            url = f"https://drive.google.com/uc?id={FILE_ID}"
-            gdown.download(url, MODEL_PATH, quiet=False)
-        except Exception as e:
-            return None, f"❌ Gagal download model: {e}"
-
-    # Load model
+    file_id_secret = ""
+    model_path_secret = ""
     try:
-        model = joblib.load(MODEL_PATH)
-        return model, "✅ Model Loaded (AutoML - Production Ready)"
+        file_id_secret = st.secrets.get("GDRIVE_MODEL_FILE_ID", "") if hasattr(st, "secrets") else ""
+        model_path_secret = st.secrets.get("MODEL_PATH", "") if hasattr(st, "secrets") else ""
+    except Exception:
+        pass
+
+    FILE_ID = (
+        os.environ.get("GDRIVE_MODEL_FILE_ID")
+        or file_id_secret
+        or "1yBlsh6nY6NRG2ACqsBECd2XP50o8MIO2"
+    )
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+
+    def _read_head(path, n=200):
+        try:
+            with open(path, "rb") as f:
+                return f.read(n)
+        except Exception:
+            return b""
+
+    def _looks_like_lfs_pointer(path):
+        head = _read_head(path, 200)
+        txt = head.decode("utf-8", errors="ignore")
+        return txt.startswith("version https://git-lfs.github.com/spec/v1")
+
+    def _looks_like_html(path):
+        head = _read_head(path, 400)
+        txt = head.decode("utf-8", errors="ignore").lower()
+        return ("<!doctype html" in txt) or ("<html" in txt)
+
+    # 1) Try local paths first (repo file or env override)
+    lfs_detected = False
+    candidates = []
+
+    env_path = os.environ.get("MODEL_PATH") or model_path_secret
+    if env_path:
+        candidates.append(env_path)
+    candidates += [
+        os.path.join(base_dir, "model", "best_model.pkl"),
+        os.path.join(base_dir, "best_model.pkl"),
+    ]
+
+    last_load_err = None
+    for path in candidates:
+        if not path or not os.path.exists(path):
+            continue
+        if _looks_like_lfs_pointer(path):
+            lfs_detected = True
+            continue
+        if _looks_like_html(path):
+            continue
+        try:
+            model = joblib.load(path)
+            rel = os.path.relpath(path, base_dir)
+            return model, f"✅ Model Loaded (AutoML - Production Ready) — local: {rel}"
+        except Exception as e:
+            last_load_err = e
+
+    # 2) Fallback: download from Google Drive (useful on Streamlit Cloud, esp. if Git LFS not pulled)
+    try:
+        import gdown
+
+        download_path = os.path.join(base_dir, "best_model.pkl")
+        tmp_path = download_path + ".tmp"
+
+        # Clean up broken leftovers
+        for p in (tmp_path,):
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass
+
+        if os.path.exists(download_path) and (_looks_like_html(download_path) or _looks_like_lfs_pointer(download_path)):
+            try:
+                os.remove(download_path)
+            except Exception:
+                pass
+
+        url = f"https://drive.google.com/uc?id={FILE_ID}"
+        try:
+            out = gdown.download(id=FILE_ID, output=tmp_path, quiet=False)
+        except TypeError:
+            out = gdown.download(url, tmp_path, quiet=False)
+
+        if not out or not os.path.exists(tmp_path):
+            raise RuntimeError("gdown tidak menghasilkan file")
+        if _looks_like_html(tmp_path):
+            raise RuntimeError("hasil download berupa HTML (cek permission/quota Google Drive)")
+
+        os.replace(tmp_path, download_path)
+
+        model = joblib.load(download_path)
+        return model, "✅ Model Loaded (AutoML - Production Ready) — downloaded (GDrive)"
     except Exception as e:
-        return None, f"❌ Gagal load model: {e}"
+        hint = ""
+        if lfs_detected:
+            hint = " | terdeteksi Git LFS pointer: Streamlit Cloud sering tidak menarik file LFS"
+        if last_load_err is not None:
+            hint = f"{hint} | load error terakhir: {type(last_load_err).__name__}: {last_load_err}"
+        return RuleBasedFallbackModel(), f"⚠️ Demo Mode (Rule-based fallback) — gagal load model: {type(e).__name__}: {e}{hint}"
 # ─── SHAP Approximation ───────────────────────────────────────────────────────
-def estimate_shap(model, input_df):
+def estimate_shap(model, input_df, explain_features=None):
+    """Return SHAP-like contributions for the given feature list.
+
+    - Tries real SHAP for tree models.
+    - Falls back to a simple perturbation-based approximation.
+    """
+
+    explain_features = explain_features or list(input_df.columns)
+
+    # 1) Try real SHAP (works for many tree models)
     try:
         import shap
+
         explainer = shap.TreeExplainer(model)
         vals = explainer.shap_values(input_df)
-        return (vals[1][0] if isinstance(vals, list) else vals[0])
+        if isinstance(vals, list):
+            vals = vals[1] if len(vals) > 1 else vals[0]
+
+        row_vals = vals[0]
+        by_col = {col: float(row_vals[i]) for i, col in enumerate(input_df.columns)}
+        return np.array([by_col.get(f, 0.0) for f in explain_features], dtype=float)
     except Exception:
-        base = model.predict_proba(input_df)[0][1]
-        approx = []
-        for i in range(input_df.shape[1]):
-            p = input_df.copy()
-            try:
-                p.iloc[0, i] = p.iloc[0, i] * 0.7
-            except:
-                pass
+        pass
+
+    # 2) Approximate: perturb one feature at a time and measure probability delta
+    base = model.predict_proba(input_df)[0][1]
+    approx = []
+    for f in explain_features:
+        p = input_df.copy()
+        if f not in p.columns:
+            approx.append(0.0)
+            continue
+        try:
+            cur = p.at[0, f]
+            if isinstance(cur, bool):
+                p.at[0, f] = not cur
+            elif isinstance(cur, (int, float, np.number)):
+                p.at[0, f] = float(cur) * 0.7
+            else:
+                approx.append(0.0)
+                continue
+        except Exception:
+            approx.append(0.0)
+            continue
+
+        try:
             approx.append(base - model.predict_proba(p)[0][1])
-        return np.array(approx)
+        except Exception:
+            approx.append(0.0)
+    return np.array(approx, dtype=float)
 
 # ─── GenAI ────────────────────────────────────────────────────────────────────
 @st.cache_resource
@@ -500,10 +652,12 @@ elif page == "🔍 Credit Scorer":
 
         # SHAP
         st.markdown("### 🔍 Penjelasan Faktor Penentu (SHAP)")
-        numeric_features = [f for f in MODEL_FEATURES
-                            if isinstance(input_data.get(f), (int, float))]
-        numeric_df = pd.DataFrame([{f: input_data[f] for f in numeric_features}])
-        shap_vals  = estimate_shap(model, numeric_df)
+        numeric_features = [
+            f for f in MODEL_FEATURES
+            if isinstance(input_data.get(f), (int, float))
+            and not isinstance(input_data.get(f), bool)
+        ]
+        shap_vals = estimate_shap(model, input_df, numeric_features)
 
         fig_shap = plot_shap(
             shap_vals, numeric_features,
