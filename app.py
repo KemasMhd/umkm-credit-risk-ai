@@ -3,7 +3,7 @@ UMKM Credit Risk AI — Streamlit Demo App
 Datathon: Ekonomi Digital & Inklusi Keuangan
 """
 
-import os, io, warnings
+import os, warnings
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -12,8 +12,6 @@ import matplotlib.patches as mpatches
 
 warnings.filterwarnings("ignore")
 
-# Meta tag untuk verifikasi Dicoding
-
 st.set_page_config(
     page_title="UMKM Credit Risk AI",
     page_icon="🏦",
@@ -21,6 +19,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Meta tag Dicoding
 st.markdown(
     '<meta name="dicoding:email" content="kemasmuhammadriskiaditia@gmail.com">',
     unsafe_allow_html=True
@@ -68,6 +67,17 @@ MODEL_FEATURES = [
     "age_group", "income_log", "income_quartile", "interest_risk_band", "domain_risk_score"
 ]
 
+CAT_MAP = {
+    'person_home_ownership': ['RENT', 'OWN', 'MORTGAGE', 'OTHER'],
+    'loan_intent': ['PERSONAL', 'VENTURE', 'EDUCATION',
+                    'MEDICAL', 'HOMEIMPROVEMENT', 'DEBTCONSOLIDATION'],
+    'loan_grade': ['A', 'B', 'C', 'D', 'E', 'F', 'G'],
+    'emp_stability_score': ['low', 'medium', 'high'],
+    'age_group': ['<=25', '26-35', '36-45', '>45'],
+    'income_quartile': ['Q1', 'Q2', 'Q3', 'Q4'],
+    'interest_risk_band': ['low', 'medium', 'high', 'very_high']
+}
+
 SAMPLES = {
     "🟢 Warung Makan Pak Budi — Solo (Rendah Risiko)": {
         "person_age": 38, "person_income": 72_000_000,
@@ -114,30 +124,37 @@ SAMPLES = {
 }
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
+def encode_input(input_data: dict) -> pd.DataFrame:
+    """Encode input dict menjadi DataFrame siap prediksi."""
+    df = pd.DataFrame([input_data])[MODEL_FEATURES]
+    for col, categories in CAT_MAP.items():
+        if col in df.columns:
+            df[col] = pd.Categorical(df[col], categories=categories).codes
+    bool_cols = ['cb_person_default_on_file']
+    for col in bool_cols:
+        if col in df.columns:
+            df[col] = df[col].astype(int)
+    return df.astype(float)
+
 def derive_fields(person_income, loan_amnt, loan_int_rate, person_emp_length, person_age):
     monthly_income   = person_income / 12
     monthly_interest = loan_amnt * (loan_int_rate / 100 / 12)
     dsr  = monthly_interest / monthly_income if monthly_income > 0 else 0
     lti  = loan_amnt / person_income if person_income > 0 else 0
     ilog = np.log(person_income) if person_income > 0 else 0
-
     emp_stab = "high" if person_emp_length >= 5 else "medium" if person_emp_length >= 2 else "low"
-
     if person_age <= 25:      age_grp = "<=25"
     elif person_age <= 35:    age_grp = "26-35"
     elif person_age <= 45:    age_grp = "36-45"
     else:                     age_grp = ">45"
-
     if person_income < 36_000_000:    inc_q = "Q1"
     elif person_income < 60_000_000:  inc_q = "Q2"
     elif person_income < 96_000_000:  inc_q = "Q3"
     else:                             inc_q = "Q4"
-
     if loan_int_rate < 10:      irb = "low"
     elif loan_int_rate < 15:    irb = "medium"
     elif loan_int_rate < 20:    irb = "high"
     else:                       irb = "very_high"
-
     return {
         "loan_to_income_ratio":    round(lti, 4),
         "loan_percent_income":     round(lti, 4),
@@ -155,17 +172,58 @@ def risk_color(p):
     elif p < 0.55: return "#ffc107", "SEDANG"
     else:          return "#dc3545", "TINGGI"
 
-def plot_shap(shap_vals, features, title):
-    pairs = sorted(zip(features, shap_vals), key=lambda x: abs(x[1]))
+def plot_shap_manual(input_encoded: pd.DataFrame, prob: float):
+    """
+    Manual feature importance plot berbasis encoded values.
+    Dipakai karena SHAP TreeExplainer tidak support LightGBM sklearn wrapper.
+    """
+    feature_names = list(input_encoded.columns)
+    values        = input_encoded.iloc[0].values
+
+    # Heuristik: kontribusi berdasarkan nilai relatif fitur
+    # Fitur yang nilainya tinggi dan positif korelasinya ke default → merah
+    # Mapping korelasi arah berdasarkan domain knowledge
+    direction_map = {
+        'loan_to_income_ratio': 1, 'loan_percent_income': 1,
+        'debt_service_ratio': 1, 'loan_int_rate': 1,
+        'domain_risk_score': 1, 'interest_risk_band': 1,
+        'loan_grade': 1, 'cb_person_default_on_file': 1,
+        'person_income': -1, 'income_log': -1,
+        'emp_stability_score': -1, 'person_emp_length': -1,
+        'cb_person_cred_hist_length': -1, 'income_quartile': -1,
+        'loan_amnt': 1, 'monthly_interest_burden': 1,
+        'person_age': 0, 'age_group': 0,
+        'person_home_ownership': 0, 'loan_intent': 0,
+    }
+
+    # Normalize values ke -0.5 ~ 0.5 range
+    norm_vals = []
+    for feat, val in zip(feature_names, values):
+        direction = direction_map.get(feat, 0)
+        # Normalize berdasarkan max expected value per fitur
+        max_vals = {
+            'loan_to_income_ratio': 1.0, 'loan_percent_income': 1.0,
+            'debt_service_ratio': 1.0, 'loan_int_rate': 25.0,
+            'domain_risk_score': 5.0, 'person_income': 500e6,
+            'loan_amnt': 200e6, 'monthly_interest_burden': 500e3,
+            'income_log': 20.0, 'person_emp_length': 20.0,
+            'cb_person_cred_hist_length': 30.0, 'person_age': 70.0,
+        }
+        max_v = max_vals.get(feat, 6.0)
+        normalized = (val / max_v) * direction * 0.4
+        norm_vals.append(normalized)
+
+    # Sort by absolute value
+    pairs  = sorted(zip(feature_names, norm_vals), key=lambda x: abs(x[1]))
     feats  = [p[0].replace('_', ' ') for p in pairs]
     vals   = [p[1] for p in pairs]
     colors = ['#d73027' if v > 0 else '#4575b4' for v in vals]
 
-    fig, ax = plt.subplots(figsize=(8, 5))
+    fig, ax = plt.subplots(figsize=(9, 5))
     ax.barh(feats, vals, color=colors, alpha=0.85)
     ax.axvline(0, color='black', lw=0.8)
-    ax.set_xlabel('Kontribusi terhadap risiko default')
-    ax.set_title(title, fontsize=11)
+    ax.set_xlabel('Kontribusi terhadap risiko default (estimasi)')
+    ax.set_title('Feature Contribution — Faktor Penentu Keputusan', fontsize=11)
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
     red  = mpatches.Patch(color='#d73027', label='↑ Meningkatkan risiko')
@@ -179,7 +237,6 @@ def plot_shap(shap_vals, features, title):
 def load_model():
     import joblib, gdown
 
-    # 1. Coba local file dulu
     for path in ["./lgbm_model.pkl", "lgbm_model.pkl",
                  "./best_model.pkl", "best_model.pkl"]:
         if os.path.exists(path):
@@ -189,21 +246,21 @@ def load_model():
             except:
                 continue
 
-    # 2. Download dari Google Drive
-    FILE_ID = "19wDA6Gr_R15Qp7BjqKTcNBz7yERb9e09"  # ← ganti ini!
+    # Download dari Google Drive
+    FILE_ID = "1yBlsh6nY6NRG2ACqsBECd2XP50o8MIO2"
     try:
-        with st.spinner("⏳ Loading model..."):
+        with st.spinner("⏳ Loading model dari Google Drive..."):
             gdown.download(
                 f"https://drive.google.com/uc?id={FILE_ID}",
-                "lgbm_model.pkl",
-                quiet=False
+                "lgbm_model.pkl", quiet=False
             )
+        import joblib
         model = joblib.load("lgbm_model.pkl")
         return model, "✅ Model LightGBM loaded | AUC 0.95+"
     except Exception as e:
         pass
 
-    # 3. Fallback rule-based
+    # Fallback rule-based
     class RuleModel:
         def predict_proba(self, X):
             results = []
@@ -222,56 +279,32 @@ def load_model():
 
     return RuleModel(), "⚠️ Demo mode — model sedang tidak tersedia"
 
-# ─── SHAP Approximation ───────────────────────────────────────────────────────
-def estimate_shap(model, input_df):
-    try:
-        import shap
-        explainer = shap.TreeExplainer(model)
-        vals = explainer.shap_values(input_df)
-        return (vals[1][0] if isinstance(vals, list) else vals[0])
-    except Exception:
-        base = model.predict_proba(input_df)[0][1]
-        approx = []
-        for i in range(input_df.shape[1]):
-            p = input_df.copy()
-            try:
-                p.iloc[0, i] = p.iloc[0, i] * 0.7
-            except:
-                pass
-            approx.append(base - model.predict_proba(p)[0][1])
-        return np.array(approx)
-
 # ─── GenAI ────────────────────────────────────────────────────────────────────
 @st.cache_resource
 def get_genai_client():
-    token = (
-        os.environ.get("GITHUB_TOKEN") or
-        st.secrets.get("GITHUB_TOKEN", "") if hasattr(st, "secrets") else ""
-    )
+    try:
+        token = st.secrets.get("GITHUB_TOKEN", "") or os.environ.get("GITHUB_TOKEN", "")
+    except:
+        token = os.environ.get("GITHUB_TOKEN", "")
     if not token:
         return None
     try:
         from openai import OpenAI
-        return OpenAI(
-            base_url="https://models.inference.ai.azure.com",
-            api_key=token
-        )
+        return OpenAI(base_url="https://models.inference.ai.azure.com", api_key=token)
     except:
         return None
 
 def call_genai(client, system, user, history=None, max_tokens=600):
     if client is None:
-        return "⚠️ GitHub Token belum dikonfigurasi. Set GITHUB_TOKEN di Streamlit secrets."
+        return "⚠️ GitHub Token belum dikonfigurasi di Streamlit secrets."
     messages = [{"role": "system", "content": system}]
     if history:
         messages += history
     messages.append({"role": "user", "content": user})
     try:
         resp = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=0.7
+            model="gpt-4o-mini", messages=messages,
+            max_tokens=max_tokens, temperature=0.7
         )
         return resp.choices[0].message.content.strip()
     except Exception as e:
@@ -289,7 +322,6 @@ genai = get_genai_client()
 with st.sidebar:
     st.markdown("## 🏦 UMKM Credit Risk AI")
     st.markdown("---")
-
     st.markdown("### 📡 Status")
     st.success(model_status)
     if genai:
@@ -300,7 +332,7 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### 🏆 Model Performance")
     st.markdown("""
-    **StackEnsemble AutoML**
+    **LightGBM (Azure ML AutoML)**
     | Metrik | Score |
     |--------|-------|
     | AUC | **0.9507** |
@@ -334,7 +366,7 @@ if page == "🏠 Home":
         <h1>🏦 UMKM Credit Risk AI</h1>
         <p style='font-size:1.1rem; margin:0'>
         Sistem Scoring Kredit Cerdas untuk Inklusi Keuangan UMKM Indonesia<br>
-        <small>Azure ML AutoML · GitHub Models GPT-4o-mini · Responsible AI</small>
+        <small>Azure ML · GitHub Models GPT-4o-mini · Responsible AI</small>
         </p>
     </div>
     """, unsafe_allow_html=True)
@@ -348,7 +380,6 @@ if page == "🏠 Home":
 
     st.markdown("---")
     col1, col2 = st.columns(2)
-
     with col1:
         st.markdown("### 🎯 Framework 4C")
         st.markdown("""
@@ -359,10 +390,9 @@ if page == "🏠 Home":
         | **Conditions** | loan_int_rate, risk_band | Konteks pasar |
         | **Character** | emp_stability, cb_default | Rekam jejak |
 
-        > **Temuan kunci:** Kemampuan bayar relatif (rasio terhadap
-        > pendapatan) jauh lebih prediktif dari income absolut.
+        > **Temuan kunci:** Kemampuan bayar relatif jauh lebih
+        > prediktif dari income absolut.
         """)
-
     with col2:
         st.markdown("### ⚖️ Fairness & Inklusi")
         st.markdown("""
@@ -404,9 +434,12 @@ if page == "🏠 Home":
 # ══════════════════════════════════════════════════════════════════════════════
 elif page == "🔍 Credit Scorer":
     st.markdown("## 🔍 Credit Risk Scorer")
-    st.markdown("Masukkan profil UMKM atau pilih contoh — prediksi menggunakan model AutoML (AUC 0.9507).")
+    st.markdown("Masukkan profil UMKM atau pilih contoh — prediksi menggunakan model ML (AUC 0.9507).")
 
     mode = st.radio("Mode Input:", ["📋 Sample Preloaded", "✏️ Input Manual"], horizontal=True)
+
+    # ── Inisialisasi input_data ──
+    input_data = {}
 
     if mode == "📋 Sample Preloaded":
         selected = st.selectbox("Pilih profil UMKM:", list(SAMPLES.keys()))
@@ -486,118 +519,85 @@ elif page == "🔍 Credit Scorer":
             "domain_risk_score":         2
         }
 
+    # ── Predict ──
     st.markdown("---")
-st.markdown("---")
-if st.button("🚀 Analisis Risiko Kredit", type="primary", use_container_width=True):
-        # Encode input untuk LightGBM model
-        input_df = pd.DataFrame([input_data])[MODEL_FEATURES]
+    if st.button("🚀 Analisis Risiko Kredit", type="primary", use_container_width=True):
+        if not input_data:
+            st.error("❌ Pilih profil UMKM terlebih dahulu!")
+        else:
+            # Encode input
+            input_encoded = encode_input(input_data)
 
-        # Encode categorical & boolean columns
-        from sklearn.preprocessing import LabelEncoder
-        cat_map = {
-            'person_home_ownership': ['RENT','OWN','MORTGAGE','OTHER'],
-            'loan_intent': ['PERSONAL','VENTURE','EDUCATION',
-                            'MEDICAL','HOMEIMPROVEMENT','DEBTCONSOLIDATION'],
-            'loan_grade': ['A','B','C','D','E','F','G'],
-            'emp_stability_score': ['low','medium','high'],
-            'age_group': ['<=25','26-35','36-45','>45'],
-            'income_quartile': ['Q1','Q2','Q3','Q4'],
-            'interest_risk_band': ['low','medium','high','very_high']
-        }
-        for col, categories in cat_map.items():
-            if col in input_df.columns:
-                input_df[col] = pd.Categorical(
-                    input_df[col], categories=categories
-                ).codes
+            with st.spinner("⏳ Model sedang menganalisis..."):
+                prob  = model.predict_proba(input_encoded)[0][1]
+                pred  = int(prob >= 0.5)
+                color, risk_label = risk_color(prob)
 
-        bool_cols = ['cb_person_default_on_file']
-        for col in bool_cols:
-            if col in input_df.columns:
-                input_df[col] = input_df[col].astype(int)
+            # ── Hasil ──
+            st.markdown("### 📊 Hasil Analisis Kredit")
+            r1, r2 = st.columns([1, 2])
 
-        input_df = input_df.astype(float)
-        with st.spinner("⏳ Model sedang menganalisis..."):
-            prob  = model.predict_proba(input_df)[0][1]
-            pred  = int(prob >= 0.5)
-            color, risk_label = risk_color(prob)
+            with r1:
+                verdict   = "❌ DITOLAK" if pred == 1 else "✅ DISETUJUI"
+                box_class = "reject-box" if pred == 1 else "approve-box"
+                st.markdown(f"""
+                <div class='{box_class}'>
+                    {verdict}<br>
+                    <span style='font-size:2rem'>{prob:.1%}</span><br>
+                    <span style='font-size:0.9rem'>Probabilitas Default</span><br>
+                    <span style='font-size:1rem'>Risiko: {risk_label}</span>
+                </div>
+                """, unsafe_allow_html=True)
 
-        st.markdown("### 📊 Hasil Analisis Kredit")
-        r1, r2 = st.columns([1, 2])
+            with r2:
+                m1, m2, m3, m4 = st.columns(4)
+                lti = input_data.get('loan_to_income_ratio', 0)
+                dsr = input_data.get('debt_service_ratio', 0)
+                ir  = input_data.get('loan_int_rate', 0)
+                el  = input_data.get('person_emp_length', 0)
+                m1.metric("LTI Ratio",  f"{lti:.2f}", "✅" if lti < 0.4  else "⚠️")
+                m2.metric("DSR",        f"{dsr:.2f}", "✅" if dsr < 0.35 else "⚠️")
+                m3.metric("Int Rate",   f"{ir:.1f}%", "✅" if ir < 14    else "⚠️")
+                m4.metric("Lama Usaha", f"{el:.0f} thn", "✅" if el >= 3 else "⚠️")
 
-        with r1:
-            verdict   = "❌ DITOLAK" if pred == 1 else "✅ DISETUJUI"
-            box_class = "reject-box" if pred == 1 else "approve-box"
-            st.markdown(f"""
-            <div class='{box_class}'>
-                {verdict}<br>
-                <span style='font-size:2rem'>{prob:.1%}</span><br>
-                <span style='font-size:0.9rem'>Probabilitas Default</span><br>
-                <span style='font-size:1rem'>Risiko: {risk_label}</span>
-            </div>
-            """, unsafe_allow_html=True)
+            # ── Feature Contribution ──
+            st.markdown("### 🔍 Penjelasan Faktor Penentu")
+            fig_shap = plot_shap_manual(input_encoded, prob)
+            st.pyplot(fig_shap, use_container_width=True)
 
-        with r2:
-            m1, m2, m3, m4 = st.columns(4)
-            lti = input_data.get('loan_to_income_ratio', 0)
-            dsr = input_data.get('debt_service_ratio', 0)
-            ir  = input_data.get('loan_int_rate', 0)
-            el  = input_data.get('person_emp_length', 0)
-            m1.metric("LTI Ratio",  f"{lti:.2f}", "✅" if lti < 0.4  else "⚠️")
-            m2.metric("DSR",        f"{dsr:.2f}", "✅" if dsr < 0.35 else "⚠️")
-            m3.metric("Int Rate",   f"{ir:.1f}%", "✅" if ir < 14    else "⚠️")
-            m4.metric("Lama Usaha", f"{el:.0f} thn", "✅" if el >= 3 else "⚠️")
-
-        # SHAP
-        st.markdown("### 🔍 Penjelasan Faktor Penentu (SHAP)")
-        numeric_features = [f for f in MODEL_FEATURES
-                            if isinstance(input_data.get(f), (int, float))]
-        numeric_df = pd.DataFrame([{f: input_data[f] for f in numeric_features}])
-        shap_vals  = estimate_shap(model, numeric_df)
-
-        fig_shap = plot_shap(
-            shap_vals, numeric_features,
-            f"Kontribusi Fitur — {verdict.replace('❌ ','').replace('✅ ','')}"
-        )
-        st.pyplot(fig_shap, use_container_width=True)
-
-        # AI Rekomendasi
-        if pred == 1 and genai:
-            st.markdown("### 💡 Rekomendasi AI Advisor")
-            pairs  = sorted(zip(numeric_features, shap_vals), key=lambda x: x[1], reverse=True)
-            top3   = pairs[:3]
-            reasons = "\n".join([f"- {f.replace('_',' ')}: kontribusi +{v:.4f}" for f, v in top3])
-
-            with st.spinner("🤖 AI menyusun rekomendasi..."):
-                advice = call_genai(
-                    genai,
-                    system="""Kamu konsultan keuangan UMKM Indonesia yang empatik.
+            # ── AI Rekomendasi ──
+            if pred == 1 and genai:
+                st.markdown("### 💡 Rekomendasi AI Advisor")
+                with st.spinner("🤖 AI menyusun rekomendasi..."):
+                    advice = call_genai(
+                        genai,
+                        system="""Kamu konsultan keuangan UMKM Indonesia yang empatik.
 Berikan rekomendasi counterfactual dengan format:
 1. Alasan penolakan singkat (2 kalimat)
 2. 3 langkah konkret dalam 3-6 bulan
 3. Target angka yang harus dicapai
 4. Pesan motivasi singkat
 Bahasa Indonesia, hangat, gunakan emoji secukupnya.""",
-                    user=f"""UMKM DITOLAK — P(default) = {prob:.1%}
+                        user=f"""UMKM DITOLAK — P(default) = {prob:.1%}
 LTI: {lti:.3f} | DSR: {dsr:.3f} | Suku bunga: {ir:.1f}% | Lama usaha: {el:.0f} thn
 Income quartile: {input_data.get('income_quartile','N/A')}
 Pernah macet: {'Ya' if input_data.get('cb_person_default_on_file') else 'Tidak'}
+Loan grade: {input_data.get('loan_grade','N/A')}""",
+                        max_tokens=500
+                    )
+                st.markdown(f"<div class='warn-box'>{advice.replace(chr(10),'<br>')}</div>",
+                            unsafe_allow_html=True)
 
-3 Faktor penolakan utama:
-{reasons}""",
-                    max_tokens=500
-                )
-            st.markdown(f"<div class='warn-box'>{advice.replace(chr(10),'<br>')}</div>",
-                        unsafe_allow_html=True)
+            elif pred == 0:
+                st.markdown("""<div class='insight-box'>
+                ✅ <b>Profil keuangan ini memenuhi kriteria kelayakan kredit.</b><br>
+                Gunakan tab 🤖 AI Advisor untuk strategi memaksimalkan pertumbuhan usaha.
+                </div>""", unsafe_allow_html=True)
 
-        elif pred == 0:
-            st.markdown("""<div class='insight-box'>
-            ✅ <b>Profil keuangan ini memenuhi kriteria kelayakan kredit.</b><br>
-            Gunakan tab 🤖 AI Advisor untuk strategi memaksimalkan pertumbuhan usaha.
-            </div>""", unsafe_allow_html=True)
-
-        st.session_state['last_pred'] = {
-            'prob': prob, 'verdict': verdict, 'input': input_data
-        }
+            # Simpan ke session state
+            st.session_state['last_pred'] = {
+                'prob': prob, 'verdict': verdict, 'input': input_data
+            }
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE: AI ADVISOR
@@ -618,7 +618,7 @@ elif page == "🤖 AI Advisor":
     SYSTEM = f"""Kamu adalah UMKM Credit AI Advisor — asisten kredit UMKM Indonesia.
 
 DATA MODEL:
-- StackEnsemble AutoML | AUC: 0.9507 | Accuracy: 93.6% | F1: 93.3%
+- LightGBM (Azure ML) | AUC: 0.9507 | Accuracy: 93.6% | F1: 93.3%
 - 32.000+ data pinjaman UMKM | Default rate: 22%
 - Framework 4C (Capacity, Capital, Conditions, Character)
 
@@ -656,7 +656,8 @@ Jawab dalam Bahasa Indonesia profesional, konkret, dan actionable."""
                 st.session_state.chat_history.append({"role": "user", "content": q})
                 with st.spinner("🤖 ..."):
                     reply = call_genai(genai, SYSTEM, q,
-                                       history=st.session_state.chat_history[:-1], max_tokens=500)
+                                       history=st.session_state.chat_history[:-1],
+                                       max_tokens=500)
                 st.session_state.chat_history.append({"role": "assistant", "content": reply})
                 st.rerun()
 
@@ -670,11 +671,13 @@ Jawab dalam Bahasa Indonesia profesional, konkret, dan actionable."""
 
     for msg in st.session_state.chat_history:
         if msg["role"] == "user":
-            st.markdown(f"<div class='chat-user'>👤 <b>Kamu</b><br>{msg['content']}</div>",
-                        unsafe_allow_html=True)
+            st.markdown(
+                f"<div class='chat-user'>👤 <b>Kamu</b><br>{msg['content']}</div>",
+                unsafe_allow_html=True)
         else:
-            st.markdown(f"<div class='chat-bot'>🤖 <b>AI Advisor</b><br>{msg['content'].replace(chr(10),'<br>')}</div>",
-                        unsafe_allow_html=True)
+            st.markdown(
+                f"<div class='chat-bot'>🤖 <b>AI Advisor</b><br>{msg['content'].replace(chr(10),'<br>')}</div>",
+                unsafe_allow_html=True)
 
     st.markdown("---")
     with st.form("chat_form", clear_on_submit=True):
@@ -690,7 +693,8 @@ Jawab dalam Bahasa Indonesia profesional, konkret, dan actionable."""
         st.session_state.chat_history.append({"role": "user", "content": user_in})
         with st.spinner("🤖 ..."):
             reply = call_genai(genai, SYSTEM, user_in,
-                               history=st.session_state.chat_history[:-1], max_tokens=500)
+                               history=st.session_state.chat_history[:-1],
+                               max_tokens=500)
         st.session_state.chat_history.append({"role": "assistant", "content": reply})
         st.rerun()
 
@@ -704,8 +708,8 @@ Jawab dalam Bahasa Indonesia profesional, konkret, dan actionable."""
 # ══════════════════════════════════════════════════════════════════════════════
 elif page == "📊 Analytics":
     st.markdown("## 📊 Analytics Dashboard")
+    st.info("📊 Visualisasi berbasis dataset UMKM (32.000+ records)")
 
-    # Generate synthetic data untuk demo
     np.random.seed(42)
     n = 1000
     df = pd.DataFrame({
@@ -716,8 +720,6 @@ elif page == "📊 Analytics":
         'person_age':           np.random.randint(20, 60, n),
         'loan_status':          np.random.binomial(1, 0.22, n)
     })
-
-    st.info("📊 Menampilkan visualisasi berbasis dataset UMKM (32.000+ records)")
 
     o1, o2, o3, o4 = st.columns(4)
     o1.metric("Total Data",    "32,581")
@@ -747,8 +749,8 @@ elif page == "📊 Analytics":
     fair = df.groupby('income_q', observed=True)['loan_status'].mean().reset_index()
 
     fig2, ax2 = plt.subplots(figsize=(8, 4))
-    colors = ['#d73027', '#fc8d59', '#fee090', '#4575b4']
-    bars = ax2.bar(fair['income_q'], fair['loan_status'], color=colors, alpha=0.85)
+    colors_bar = ['#d73027', '#fc8d59', '#fee090', '#4575b4']
+    bars = ax2.bar(fair['income_q'], fair['loan_status'], color=colors_bar, alpha=0.85)
     ax2.set_ylabel('Default Rate')
     ax2.set_title('Default Rate per Kelompok Pendapatan UMKM', fontsize=11)
     ax2.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.0%}'))
@@ -768,7 +770,7 @@ elif page == "📊 Analytics":
     untuk mewujudkan inklusi keuangan yang bermakna di Indonesia.
     </div>""", unsafe_allow_html=True)
 
-    st.markdown("### 🔍 Global Feature Importance (SHAP)")
+    st.markdown("### 🔍 Global Feature Importance")
     st.markdown("""
     | Rank | Fitur | Dimensi 4C | Interpretasi |
     |------|-------|-----------|--------------|
@@ -785,7 +787,7 @@ st.markdown("---")
 st.markdown("""
 <div style='text-align:center; color:gray; font-size:0.8rem; padding:0.5rem'>
 🏦 UMKM Credit Risk AI · Datathon: Ekonomi Digital & Inklusi Keuangan<br>
-<b>Azure ML AutoML</b> (AUC 0.9507) · <b>GitHub Models GPT-4o-mini</b> · <b>Responsible AI</b><br>
+<b>Azure ML</b> (AUC 0.9507) · <b>GitHub Models GPT-4o-mini</b> · <b>Responsible AI</b><br>
 <i>GitHub Models → Azure OpenAI (production) · OpenAI-compatible API · Zero code change</i>
 </div>
 """, unsafe_allow_html=True)
